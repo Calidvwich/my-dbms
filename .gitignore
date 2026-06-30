@@ -1,0 +1,22 @@
+# Local references and imported upstream copies
+references/
+project/
+.tmp-db2023-reference/
+
+# Local WSL environment
+wsl/
+
+# Build outputs
+build/
+cmake-build-*/
+
+# Generated database/test data
+BufferPoolManagerTest_db/
+*_test_db/
+*_retest_db/
+p10_recovery_db/
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store

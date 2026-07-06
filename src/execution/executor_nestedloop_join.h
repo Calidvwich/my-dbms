@@ -4,6 +4,7 @@ RMDB is licensed under Mulan PSL v2. */
 #pragma once
 
 #include <algorithm>
+#include <unordered_map>
 
 #include "execution_defs.h"
 #include "execution_manager.h"
@@ -19,6 +20,7 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         bool lhs_from_left;
         bool rhs_from_left;
         CompOp op;
+        bool is_equality() const { return op == OP_EQ; }
     };
 
     std::unique_ptr<AbstractExecutor> left_;
@@ -26,14 +28,41 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     size_t len_;
     std::vector<ColMeta> cols_;
     std::vector<Condition> raw_conds_;
-    std::vector<JoinCondItem> fed_conds_;
+    std::vector<JoinCondItem> eq_conds_;
+    std::vector<JoinCondItem> residual_conds_;
     std::vector<std::unique_ptr<RmRecord>> left_block_;
     size_t block_cursor_ = 0;
     std::unique_ptr<RmRecord> right_record_;
     std::unique_ptr<RmRecord> current_;
+    std::unordered_map<std::string, std::vector<size_t>> left_hash_;
+    std::vector<size_t> candidate_rows_;
+    size_t candidate_cursor_ = 0;
+    bool hash_mode_ = false;
     bool end_ = true;
 
     static constexpr size_t JOIN_BUFFER_SIZE = 256 * 1024 * 1024;
+
+    std::string make_join_key(const RmRecord &record, bool use_left_side, const std::vector<JoinCondItem> &conds) const {
+        std::string key;
+        for (const auto &cond : conds) {
+            const char *data = use_left_side == cond.lhs_from_left ? record.data + cond.lhs_col.offset
+                                                                   : record.data + cond.rhs_col.offset;
+            const ColMeta &col = use_left_side == cond.lhs_from_left ? cond.lhs_col : cond.rhs_col;
+            key.append(data, col.len);
+        }
+        return key;
+    }
+
+    void build_left_hash() {
+        left_hash_.clear();
+        if (!hash_mode_) {
+            return;
+        }
+        for (size_t i = 0; i < left_block_.size(); i++) {
+            auto key = make_join_key(*left_block_[i], true, eq_conds_);
+            left_hash_[std::move(key)].push_back(i);
+        }
+    }
 
     bool load_left_block() {
         left_block_.clear();
@@ -50,11 +79,12 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             }
             left_->nextTuple();
         }
+        build_left_hash();
         return !left_block_.empty();
     }
 
     bool eval_join_conds(const RmRecord &left_record, const RmRecord &right_record) const {
-        for (const auto &cond : fed_conds_) {
+        for (const auto &cond : residual_conds_) {
             const char *lhs_data = cond.lhs_from_left ? left_record.data + cond.lhs_col.offset
                                                       : right_record.data + cond.lhs_col.offset;
             const char *rhs_data = cond.rhs_from_left ? left_record.data + cond.rhs_col.offset
@@ -78,26 +108,50 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             while (!right_->is_end()) {
                 if (right_record_ == nullptr) {
                     right_record_ = right_->Next();
-                    block_cursor_ = 0;
+                    if (right_record_ != nullptr && hash_mode_) {
+                        candidate_rows_.clear();
+                        auto key = make_join_key(*right_record_, false, eq_conds_);
+                        auto it = left_hash_.find(key);
+                        if (it != left_hash_.end()) {
+                            candidate_rows_ = it->second;
+                        }
+                        candidate_cursor_ = 0;
+                    } else {
+                        block_cursor_ = 0;
+                    }
                 }
                 if (right_record_ == nullptr) {
                     right_->nextTuple();
                     continue;
                 }
 
-                while (block_cursor_ < left_block_.size()) {
-                    auto &left_record = *left_block_[block_cursor_++];
-                    if (eval_join_conds(left_record, *right_record_)) {
-                        current_ = std::make_unique<RmRecord>(len_);
-                        memcpy(current_->data, left_record.data, left_->tupleLen());
-                        memcpy(current_->data + left_->tupleLen(), right_record_->data, right_->tupleLen());
-                        end_ = false;
-                        return;
+                if (hash_mode_) {
+                    while (candidate_cursor_ < candidate_rows_.size()) {
+                        auto &left_record = *left_block_[candidate_rows_[candidate_cursor_++]];
+                        if (eval_join_conds(left_record, *right_record_)) {
+                            current_ = std::make_unique<RmRecord>(len_);
+                            memcpy(current_->data, left_record.data, left_->tupleLen());
+                            memcpy(current_->data + left_->tupleLen(), right_record_->data, right_->tupleLen());
+                            end_ = false;
+                            return;
+                        }
+                    }
+                } else {
+                    while (block_cursor_ < left_block_.size()) {
+                        auto &left_record = *left_block_[block_cursor_++];
+                        if (eval_join_conds(left_record, *right_record_)) {
+                            current_ = std::make_unique<RmRecord>(len_);
+                            memcpy(current_->data, left_record.data, left_->tupleLen());
+                            memcpy(current_->data + left_->tupleLen(), right_record_->data, right_->tupleLen());
+                            end_ = false;
+                            return;
+                        }
                     }
                 }
 
                 right_record_.reset();
                 block_cursor_ = 0;
+                candidate_cursor_ = 0;
                 right_->nextTuple();
             }
 
@@ -168,7 +222,17 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
             item.op = cond.op;
             resolved_conds.push_back(item);
         }
-        fed_conds_ = std::move(resolved_conds);
+        for (const auto &cond : resolved_conds) {
+            if (cond.is_equality()) {
+                eq_conds_.push_back(cond);
+            } else {
+                residual_conds_.push_back(cond);
+            }
+        }
+        hash_mode_ = !eq_conds_.empty();
+        if (!hash_mode_) {
+            residual_conds_ = std::move(resolved_conds);
+        }
     }
 
     void beginTuple() override {

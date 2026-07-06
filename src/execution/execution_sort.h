@@ -18,6 +18,9 @@ class SortExecutor : public AbstractExecutor {
     std::vector<bool> is_desc_;
     int64_t limit_;
     bool input_sorted_;
+    bool stream_mode_ = false;
+    size_t stream_count_ = 0;
+    std::unique_ptr<RmRecord> stream_tuple_;
     std::vector<std::unique_ptr<RmRecord>> tuples_;
     size_t cursor_ = 0;
 
@@ -37,12 +40,12 @@ class SortExecutor : public AbstractExecutor {
         tuples_.clear();
         cursor_ = 0;
         if (input_sorted_) {
-            for (prev_->beginTuple(); !prev_->is_end() && (limit_ < 0 || static_cast<int64_t>(tuples_.size()) < limit_);
-                 prev_->nextTuple()) {
-                auto tuple = prev_->Next();
-                if (tuple != nullptr) {
-                    tuples_.push_back(std::move(tuple));
-                }
+            stream_mode_ = true;
+            stream_count_ = 0;
+            prev_->beginTuple();
+            stream_tuple_.reset();
+            if (!prev_->is_end() && (limit_ < 0 || stream_count_ < static_cast<size_t>(limit_))) {
+                stream_tuple_ = prev_->Next();
             }
             return;
         }
@@ -87,6 +90,26 @@ class SortExecutor : public AbstractExecutor {
     }
 
     void nextTuple() override {
+        if (stream_mode_) {
+            if (stream_tuple_ == nullptr) {
+                return;
+            }
+            stream_count_++;
+            if (limit_ >= 0 && stream_count_ >= static_cast<size_t>(limit_)) {
+                stream_tuple_.reset();
+                return;
+            }
+            prev_->nextTuple();
+            if (prev_->is_end()) {
+                stream_tuple_.reset();
+            } else {
+                stream_tuple_ = prev_->Next();
+                if (stream_tuple_ == nullptr) {
+                    stream_tuple_.reset();
+                }
+            }
+            return;
+        }
         if (cursor_ < tuples_.size()) {
             cursor_++;
         }
@@ -96,12 +119,15 @@ class SortExecutor : public AbstractExecutor {
         if (is_end()) {
             return nullptr;
         }
+        if (stream_mode_) {
+            return std::make_unique<RmRecord>(*stream_tuple_);
+        }
         return std::make_unique<RmRecord>(*tuples_[cursor_]);
     }
 
     size_t tupleLen() const override { return prev_->tupleLen(); }
     const std::vector<ColMeta> &cols() const override { return prev_->cols(); }
-    bool is_end() const override { return cursor_ >= tuples_.size(); }
+    bool is_end() const override { return stream_mode_ ? stream_tuple_ == nullptr : cursor_ >= tuples_.size(); }
     ColMeta get_col_offset(const TabCol &target) override {
         return prev_->get_col_offset(target);
     }

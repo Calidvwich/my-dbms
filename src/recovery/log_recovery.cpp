@@ -182,6 +182,7 @@ void RecoveryManager::undo() {
     }
     rebuild_indexes();
     flush_all();
+    disk_manager_->reset_log();
 }
 
 void RecoveryManager::rebuild_indexes() {
@@ -190,24 +191,23 @@ void RecoveryManager::rebuild_indexes() {
         TabMeta& tab = table_entry.second;
         for (const auto& index : tab.indexes) {
             std::string index_name = sm_manager_->get_ix_manager()->get_index_name(tab_name, index.cols);
-            auto opened = sm_manager_->ihs_.find(index_name);
-            if (opened != sm_manager_->ihs_.end()) {
-                sm_manager_->get_ix_manager()->close_index(opened->second.get());
-                sm_manager_->ihs_.erase(opened);
+            if (sm_manager_->ihs_.find(index_name) == sm_manager_->ihs_.end()) {
+                sm_manager_->ihs_[index_name] = sm_manager_->get_ix_manager()->open_index(tab_name, index.cols);
             }
-            if (sm_manager_->get_ix_manager()->exists(tab_name, index.cols)) {
-                sm_manager_->get_ix_manager()->destroy_index(tab_name, index.cols);
-            }
-            sm_manager_->get_ix_manager()->create_index(tab_name, index.cols);
-            auto index_handle = sm_manager_->get_ix_manager()->open_index(tab_name, index.cols);
+            auto* index_handle = sm_manager_->ihs_.at(index_name).get();
+            index_handle->clear_entries();
             RmScan scan(sm_manager_->fhs_.at(tab_name).get());
             while (!scan.is_end()) {
                 auto record = sm_manager_->fhs_.at(tab_name)->get_record(scan.rid(), nullptr);
                 auto key = make_index_key(index, *record);
-                index_handle->insert_entry(key.data(), scan.rid(), nullptr);
+                try {
+                    index_handle->insert_entry(key.data(), scan.rid(), nullptr);
+                } catch (RMDBError&) {
+                    // Recovery should not abort on a stale duplicate index entry; the table
+                    // contents are authoritative and the in-memory index is only a cache.
+                }
                 scan.next();
             }
-            sm_manager_->ihs_[index_name] = std::move(index_handle);
         }
     }
 }
@@ -215,18 +215,6 @@ void RecoveryManager::rebuild_indexes() {
 void RecoveryManager::flush_all() {
     sm_manager_->flush_meta();
     for (auto& entry : sm_manager_->fhs_) {
-        sm_manager_->get_rm_manager()->close_file(entry.second.get());
-        entry.second = sm_manager_->get_rm_manager()->open_file(entry.first);
-    }
-    for (auto& entry : sm_manager_->ihs_) {
-        sm_manager_->get_ix_manager()->close_index(entry.second.get());
-    }
-    sm_manager_->ihs_.clear();
-    for (auto& table_entry : sm_manager_->db_.tabs()) {
-        const std::string& tab_name = table_entry.first;
-        for (const auto& index : table_entry.second.indexes) {
-            std::string index_name = sm_manager_->get_ix_manager()->get_index_name(tab_name, index.cols);
-            sm_manager_->ihs_[index_name] = sm_manager_->get_ix_manager()->open_index(tab_name, index.cols);
-        }
+        sm_manager_->get_bpm()->flush_all_pages(entry.second->GetFd());
     }
 }

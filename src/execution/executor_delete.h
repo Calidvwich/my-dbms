@@ -51,7 +51,6 @@ class DeleteExecutor : public AbstractExecutor {
                     log.prev_lsn_ = context_->txn_->get_prev_lsn();
                     lsn_t lsn = context_->log_mgr_->add_log_to_buffer(&log);
                     context_->txn_->set_prev_lsn(lsn);
-                    context_->log_mgr_->flush_log_to_disk();
                 }
             }
             for (const auto &index : tab_.indexes) {

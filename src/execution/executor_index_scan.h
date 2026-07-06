@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <algorithm>
 #include <limits>
 #include <map>
 
@@ -35,6 +36,7 @@ class IndexScanExecutor : public AbstractExecutor {
     Rid rid_;
     std::vector<Rid> matched_rids_;
     size_t cursor_ = 0;
+    bool reverse_scan_ = false;
 
     SmManager *sm_manager_;
 
@@ -80,8 +82,8 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
    public:
-    IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, std::vector<std::string> index_col_names,
-                    Context *context) {
+    IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
+                      std::vector<std::string> index_col_names, bool reverse_scan, Context *context) {
         sm_manager_ = sm_manager;
         context_ = context;
         tab_name_ = std::move(tab_name);
@@ -90,6 +92,7 @@ class IndexScanExecutor : public AbstractExecutor {
         // index_no_ = index_no;
         index_col_names_ = index_col_names; 
         index_meta_ = *(tab_.get_index_meta(index_col_names_));
+        reverse_scan_ = reverse_scan;
         fh_ = sm_manager_->fhs_.at(tab_name_).get();
         cols_ = tab_.cols;
         len_ = cols_.back().offset + cols_.back().len;
@@ -185,6 +188,9 @@ class IndexScanExecutor : public AbstractExecutor {
 
         auto candidates = ih->range_scan_entries(lower.data(), true, lower_inclusive,
                                                  upper.data(), true, upper_inclusive);
+        if (reverse_scan_) {
+            std::reverse(candidates.begin(), candidates.end());
+        }
         for (const auto &candidate : candidates) {
             RmRecord key_record(static_cast<int>(candidate.first.size()));
             memcpy(key_record.data, candidate.first.data(), candidate.first.size());

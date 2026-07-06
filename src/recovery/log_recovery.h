@@ -46,8 +46,6 @@ private:
     void load_logs();
     void redo_log(const LogRecord* log);
     void undo_log(const LogRecord* log);
-    void rebuild_indexes();
-    void flush_all();
 
     LogBuffer buffer_;                                              // 读入日志
     DiskManager* disk_manager_;                                     // 用来读写文件

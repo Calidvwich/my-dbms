@@ -16,14 +16,74 @@ std::string table_name_from_log(const char* table_name, size_t size) {
     return std::string(table_name, table_name + size);
 }
 
-std::vector<char> make_index_key(const IndexMeta& index, const RmRecord& record) {
+std::vector<char> make_index_key(const IndexMeta& index, const char* data) {
     std::vector<char> key(index.col_tot_len);
     int offset = 0;
     for (const auto& col : index.cols) {
-        memcpy(key.data() + offset, record.data + col.offset, col.len);
+        memcpy(key.data() + offset, data + col.offset, col.len);
         offset += col.len;
     }
     return key;
+}
+
+IxIndexHandle* get_index_handle(SmManager* sm_manager, const std::string& tab_name, const IndexMeta& index) {
+    std::string index_name = sm_manager->get_ix_manager()->get_index_name(tab_name, index.cols);
+    auto it = sm_manager->ihs_.find(index_name);
+    if (it == sm_manager->ihs_.end()) {
+        it = sm_manager->ihs_.emplace(index_name, sm_manager->get_ix_manager()->open_index(tab_name, index.cols)).first;
+    }
+    return it->second.get();
+}
+
+bool rid_matches(const std::vector<Rid>& rids, const Rid& rid) {
+    return !rids.empty() && rids.front().page_no == rid.page_no && rids.front().slot_no == rid.slot_no;
+}
+
+void sync_index_insert(SmManager* sm_manager, const std::string& tab_name, const RmRecord& record, const Rid& rid) {
+    auto& tab = sm_manager->db_.get_table(tab_name);
+    for (const auto& index : tab.indexes) {
+        auto key = make_index_key(index, record.data);
+        auto* ih = get_index_handle(sm_manager, tab_name, index);
+        std::vector<Rid> existing;
+        if (ih->get_value(key.data(), &existing, nullptr)) {
+            if (rid_matches(existing, rid)) {
+                continue;
+            }
+            ih->delete_entry(key.data(), nullptr);
+        }
+        ih->insert_entry(key.data(), rid, nullptr);
+    }
+}
+
+void sync_index_delete(SmManager* sm_manager, const std::string& tab_name, const RmRecord& record) {
+    auto& tab = sm_manager->db_.get_table(tab_name);
+    for (const auto& index : tab.indexes) {
+        auto key = make_index_key(index, record.data);
+        auto* ih = get_index_handle(sm_manager, tab_name, index);
+        ih->delete_entry(key.data(), nullptr);
+    }
+}
+
+void sync_index_update(SmManager* sm_manager, const std::string& tab_name, const RmRecord& old_record,
+                       const RmRecord& new_record, const Rid& rid) {
+    auto& tab = sm_manager->db_.get_table(tab_name);
+    for (const auto& index : tab.indexes) {
+        auto old_key = make_index_key(index, old_record.data);
+        auto new_key = make_index_key(index, new_record.data);
+        if (memcmp(old_key.data(), new_key.data(), index.col_tot_len) == 0) {
+            continue;
+        }
+        auto* ih = get_index_handle(sm_manager, tab_name, index);
+        ih->delete_entry(old_key.data(), nullptr);
+        std::vector<Rid> existing;
+        if (ih->get_value(new_key.data(), &existing, nullptr)) {
+            if (rid_matches(existing, rid)) {
+                continue;
+            }
+            ih->delete_entry(new_key.data(), nullptr);
+        }
+        ih->insert_entry(new_key.data(), rid, nullptr);
+    }
 }
 
 bool safe_is_record(RmFileHandle* fh, const Rid& rid) {
@@ -115,6 +175,7 @@ void RecoveryManager::redo_log(const LogRecord* log) {
                 fh->insert_record(insert_log->insert_value_.data, nullptr);
             }
         }
+        sync_index_insert(sm_manager_, tab_name, insert_log->insert_value_, insert_log->rid_);
     } else if (log->log_type_ == LogType::DELETE) {
         auto* delete_log = static_cast<const DeleteLogRecord*>(log);
         std::string tab_name = table_name_from_log(delete_log->table_name_, delete_log->table_name_size_);
@@ -122,6 +183,7 @@ void RecoveryManager::redo_log(const LogRecord* log) {
         if (safe_is_record(fh, delete_log->rid_)) {
             fh->delete_record(delete_log->rid_, nullptr);
         }
+        sync_index_delete(sm_manager_, tab_name, delete_log->delete_value_);
     } else if (log->log_type_ == LogType::UPDATE) {
         auto* update_log = static_cast<const UpdateLogRecord*>(log);
         std::string tab_name = table_name_from_log(update_log->table_name_, update_log->table_name_size_);
@@ -129,6 +191,7 @@ void RecoveryManager::redo_log(const LogRecord* log) {
         if (safe_is_record(fh, update_log->rid_)) {
             fh->update_record(update_log->rid_, update_log->new_value_.data, nullptr);
         }
+        sync_index_update(sm_manager_, tab_name, update_log->old_value_, update_log->new_value_, update_log->rid_);
     }
 }
 
@@ -180,41 +243,5 @@ void RecoveryManager::undo() {
         }
         undo_log(log.get());
     }
-    rebuild_indexes();
-    flush_all();
     disk_manager_->reset_log();
-}
-
-void RecoveryManager::rebuild_indexes() {
-    for (auto& table_entry : sm_manager_->db_.tabs()) {
-        const std::string& tab_name = table_entry.first;
-        TabMeta& tab = table_entry.second;
-        for (const auto& index : tab.indexes) {
-            std::string index_name = sm_manager_->get_ix_manager()->get_index_name(tab_name, index.cols);
-            if (sm_manager_->ihs_.find(index_name) == sm_manager_->ihs_.end()) {
-                sm_manager_->ihs_[index_name] = sm_manager_->get_ix_manager()->open_index(tab_name, index.cols);
-            }
-            auto* index_handle = sm_manager_->ihs_.at(index_name).get();
-            index_handle->clear_entries();
-            RmScan scan(sm_manager_->fhs_.at(tab_name).get());
-            while (!scan.is_end()) {
-                auto record = sm_manager_->fhs_.at(tab_name)->get_record(scan.rid(), nullptr);
-                auto key = make_index_key(index, *record);
-                try {
-                    index_handle->insert_entry(key.data(), scan.rid(), nullptr);
-                } catch (RMDBError&) {
-                    // Recovery should not abort on a stale duplicate index entry; the table
-                    // contents are authoritative and the in-memory index is only a cache.
-                }
-                scan.next();
-            }
-        }
-    }
-}
-
-void RecoveryManager::flush_all() {
-    sm_manager_->flush_meta();
-    for (auto& entry : sm_manager_->fhs_) {
-        sm_manager_->get_bpm()->flush_all_pages(entry.second->GetFd());
-    }
 }

@@ -49,6 +49,9 @@ class Planner {
 
     // int get_indexNo(std::string tab_name, std::vector<Condition> curr_conds);
     bool get_index_cols(std::string tab_name, std::vector<Condition> curr_conds, std::vector<std::string>& index_col_names);
+    bool get_order_index_cols(std::string tab_name, const std::vector<TabCol> &order_cols,
+                              const std::vector<bool> &is_desc, std::vector<std::string> &index_col_names,
+                              bool &reverse_index_scan);
 
     ColType interp_sv_type(ast::SvType sv_type) {
         std::map<ast::SvType, ColType> m = {

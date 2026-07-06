@@ -56,7 +56,9 @@ public:
 class ScanPlan : public Plan
 {
     public:
-        ScanPlan(PlanTag tag, SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, std::vector<std::string> index_col_names)
+        ScanPlan(PlanTag tag, SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds,
+                 std::vector<std::string> index_col_names, bool reverse_index_scan = false,
+                 bool order_satisfied = false)
         {
             Plan::tag = tag;
             tab_name_ = std::move(tab_name);
@@ -66,7 +68,8 @@ class ScanPlan : public Plan
             len_ = cols_.back().offset + cols_.back().len;
             fed_conds_ = conds_;
             index_col_names_ = index_col_names;
-        
+            reverse_index_scan_ = reverse_index_scan;
+            order_satisfied_ = order_satisfied;
         }
         ~ScanPlan(){}
         // 以下变量同ScanExecutor中的变量
@@ -76,6 +79,8 @@ class ScanPlan : public Plan
         size_t len_;                               
         std::vector<Condition> fed_conds_;
         std::vector<std::string> index_col_names_;
+        bool reverse_index_scan_ = false;
+        bool order_satisfied_ = false;
     
 };
 
@@ -121,19 +126,22 @@ class SortPlan : public Plan
 {
     public:
         SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan,
-                 std::vector<TabCol> sel_cols, std::vector<bool> is_desc, int64_t limit)
+                 std::vector<TabCol> sel_cols, std::vector<bool> is_desc, int64_t limit,
+                 bool input_sorted = false)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
             sel_cols_ = std::move(sel_cols);
             is_desc_ = std::move(is_desc);
             limit_ = limit;
+            input_sorted_ = input_sorted;
         }
         ~SortPlan(){}
         std::shared_ptr<Plan> subplan_;
         std::vector<TabCol> sel_cols_;
         std::vector<bool> is_desc_;
         int64_t limit_;
+        bool input_sorted_ = false;
         
 };
 

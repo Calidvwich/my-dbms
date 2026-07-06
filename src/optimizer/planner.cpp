@@ -4,6 +4,7 @@ RMDB is licensed under Mulan PSL v2. */
 #include "planner.h"
 
 #include <algorithm>
+#include <limits>
 #include <memory>
 
 bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_conds,
@@ -53,6 +54,47 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
     return best_score > 0;
 }
 
+bool Planner::get_order_index_cols(std::string tab_name, const std::vector<TabCol> &order_cols,
+                                  const std::vector<bool> &is_desc, std::vector<std::string> &index_col_names,
+                                  bool &reverse_index_scan) {
+    index_col_names.clear();
+    reverse_index_scan = false;
+    if (order_cols.empty()) {
+        return false;
+    }
+    if (std::any_of(is_desc.begin(), is_desc.end(), [&](bool flag) { return flag != is_desc.front(); })) {
+        return false;
+    }
+
+    const auto &tab = sm_manager_->db_.get_table(tab_name);
+    bool reverse = !is_desc.empty() && is_desc.front();
+    size_t best_width = std::numeric_limits<size_t>::max();
+    for (const auto &index : tab.indexes) {
+        if (index.cols.size() < order_cols.size()) {
+            continue;
+        }
+        bool matched = true;
+        for (size_t i = 0; i < order_cols.size(); i++) {
+            if (index.cols[i].name != order_cols[i].col_name) {
+                matched = false;
+                break;
+            }
+        }
+        if (!matched) {
+            continue;
+        }
+        if (index.cols.size() < best_width) {
+            best_width = index.cols.size();
+            index_col_names.clear();
+            for (const auto &col : index.cols) {
+                index_col_names.push_back(col.name);
+            }
+            reverse_index_scan = reverse;
+        }
+    }
+    return !index_col_names.empty();
+}
+
 std::shared_ptr<Query> Planner::logical_optimization(std::shared_ptr<Query> query, Context *context) {
     (void)context;
     return query;
@@ -70,6 +112,20 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
         throw InternalError("SELECT requires at least one table");
     }
 
+    auto select = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse);
+    std::vector<TabCol> order_cols;
+    std::vector<bool> order_desc;
+    if (select != nullptr && select->has_sort && tables.size() == 1) {
+        for (const auto &order : select->orders) {
+            TabCol order_col{order->cols->tab_name, order->cols->col_name};
+            if (order_col.tab_name.empty()) {
+                order_col.tab_name = tables.front();
+            }
+            order_cols.push_back(order_col);
+            order_desc.push_back(order->orderby_dir == ast::OrderBy_DESC);
+        }
+    }
+
     std::vector<std::shared_ptr<Plan>> scans;
     scans.reserve(tables.size());
     for (const auto &table : tables) {
@@ -81,9 +137,28 @@ std::shared_ptr<Plan> Planner::make_one_rel(std::shared_ptr<Query> query) {
             }
         }
         std::vector<std::string> index_cols;
-        PlanTag scan_tag = get_index_cols(table, local_conds, index_cols) ? T_IndexScan : T_SeqScan;
+        bool reverse_index_scan = false;
+        bool order_satisfied = false;
+        bool has_index = get_index_cols(table, local_conds, index_cols);
+        if (select != nullptr && select->has_sort && tables.size() == 1) {
+            std::vector<std::string> order_index_cols;
+            bool order_reverse = false;
+            if (get_order_index_cols(table, order_cols, order_desc, order_index_cols, order_reverse)) {
+                if (!has_index) {
+                    index_cols = std::move(order_index_cols);
+                    reverse_index_scan = order_reverse;
+                    order_satisfied = true;
+                    has_index = true;
+                } else if (index_cols == order_index_cols) {
+                    reverse_index_scan = order_reverse;
+                    order_satisfied = true;
+                }
+            }
+        }
+        PlanTag scan_tag = has_index ? T_IndexScan : T_SeqScan;
         scans.push_back(std::make_shared<ScanPlan>(
-            scan_tag, sm_manager_, table, std::move(local_conds), std::move(index_cols)));
+            scan_tag, sm_manager_, table, std::move(local_conds), std::move(index_cols), reverse_index_scan,
+            order_satisfied));
     }
 
     std::shared_ptr<Plan> root = scans.front();
@@ -149,8 +224,12 @@ std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query,
         order_cols.push_back(std::move(order_col));
         is_desc.push_back(order->orderby_dir == ast::OrderBy_DESC);
     }
+    bool input_sorted = false;
+    if (auto scan = std::dynamic_pointer_cast<ScanPlan>(plan)) {
+        input_sorted = scan->order_satisfied_;
+    }
     return std::make_shared<SortPlan>(
-        T_Sort, std::move(plan), std::move(order_cols), std::move(is_desc), select->limit);
+        T_Sort, std::move(plan), std::move(order_cols), std::move(is_desc), select->limit, input_sorted);
 }
 
 std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query, Context *context) {

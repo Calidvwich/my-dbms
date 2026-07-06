@@ -17,6 +17,7 @@ class SortExecutor : public AbstractExecutor {
     std::vector<ColMeta> sort_cols_;
     std::vector<bool> is_desc_;
     int64_t limit_;
+    bool input_sorted_;
     std::vector<std::unique_ptr<RmRecord>> tuples_;
     size_t cursor_ = 0;
 
@@ -24,8 +25,9 @@ class SortExecutor : public AbstractExecutor {
     SortExecutor(std::unique_ptr<AbstractExecutor> prev,
                  const std::vector<TabCol> &sort_cols,
                  std::vector<bool> is_desc,
-                 int64_t limit)
-        : prev_(std::move(prev)), is_desc_(std::move(is_desc)), limit_(limit) {
+                 int64_t limit,
+                 bool input_sorted)
+        : prev_(std::move(prev)), is_desc_(std::move(is_desc)), limit_(limit), input_sorted_(input_sorted) {
         for (const auto &sort_col : sort_cols) {
             sort_cols_.push_back(prev_->get_col_offset(sort_col));
         }
@@ -34,6 +36,26 @@ class SortExecutor : public AbstractExecutor {
     void beginTuple() override {
         tuples_.clear();
         cursor_ = 0;
+        if (input_sorted_) {
+            for (prev_->beginTuple(); !prev_->is_end() && (limit_ < 0 || static_cast<int64_t>(tuples_.size()) < limit_);
+                 prev_->nextTuple()) {
+                auto tuple = prev_->Next();
+                if (tuple != nullptr) {
+                    tuples_.push_back(std::move(tuple));
+                }
+            }
+            return;
+        }
+        if (limit_ >= 0 && sort_cols_.empty()) {
+            for (prev_->beginTuple(); !prev_->is_end() && static_cast<int64_t>(tuples_.size()) < limit_; prev_->nextTuple()) {
+                auto tuple = prev_->Next();
+                if (tuple != nullptr) {
+                    tuples_.push_back(std::move(tuple));
+                }
+            }
+            return;
+        }
+
         for (prev_->beginTuple(); !prev_->is_end(); prev_->nextTuple()) {
             auto tuple = prev_->Next();
             if (tuple != nullptr) {
@@ -42,23 +64,25 @@ class SortExecutor : public AbstractExecutor {
         }
 
         if (!sort_cols_.empty()) {
-            std::stable_sort(
-                tuples_.begin(), tuples_.end(),
-                [&](const std::unique_ptr<RmRecord> &lhs,
-                    const std::unique_ptr<RmRecord> &rhs) {
-                    for (size_t i = 0; i < sort_cols_.size(); i++) {
-                        const auto &col = sort_cols_[i];
-                        int result = compare_raw(lhs->data + col.offset, rhs->data + col.offset,
-                                                 col.type, col.len);
-                        if (result != 0) {
-                            return is_desc_[i] ? result > 0 : result < 0;
-                        }
+            auto less = [&](const std::unique_ptr<RmRecord> &lhs,
+                            const std::unique_ptr<RmRecord> &rhs) {
+                for (size_t i = 0; i < sort_cols_.size(); i++) {
+                    const auto &col = sort_cols_[i];
+                    int result = compare_raw(lhs->data + col.offset, rhs->data + col.offset,
+                                             col.type, col.len);
+                    if (result != 0) {
+                        return is_desc_[i] ? result > 0 : result < 0;
                     }
-                    return false;
-                });
-        }
-        if (limit_ >= 0 && static_cast<uint64_t>(limit_) < tuples_.size()) {
-            tuples_.resize(static_cast<size_t>(limit_));
+                }
+                return false;
+            };
+
+            if (limit_ >= 0 && static_cast<uint64_t>(limit_) < tuples_.size()) {
+                std::partial_sort(tuples_.begin(), tuples_.begin() + limit_, tuples_.end(), less);
+                tuples_.resize(static_cast<size_t>(limit_));
+            } else {
+                std::sort(tuples_.begin(), tuples_.end(), less);
+            }
         }
     }
 

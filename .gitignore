@@ -12,6 +12,30 @@ cmake-build-*/
 .submitcheck/
 submit*.zip
 
+# Unused files from the upstream googletest source package.  The repository only
+# tracks the minimal subset required to build the storage unit_test target.
+deps/googletest/.clang-format
+deps/googletest/.github/
+deps/googletest/.gitignore
+deps/googletest/BUILD.bazel
+deps/googletest/CONTRIBUTING.md
+deps/googletest/CONTRIBUTORS
+deps/googletest/README.md
+deps/googletest/WORKSPACE
+deps/googletest/ci/
+deps/googletest/docs/
+deps/googletest/googlemock/
+deps/googletest/googletest/README.md
+deps/googletest/googletest/cmake/Config.cmake.in
+deps/googletest/googletest/cmake/gtest.pc.in
+deps/googletest/googletest/cmake/gtest_main.pc.in
+deps/googletest/googletest/cmake/libgtest.la.in
+deps/googletest/googletest/docs/
+deps/googletest/googletest/googletest/
+deps/googletest/googletest/samples/
+deps/googletest/googletest/test/
+deps/googletest/install_manifest.txt
+
 # Generated database/test data
 BufferPoolManagerTest_db/
 *_test_db/

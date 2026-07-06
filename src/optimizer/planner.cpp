@@ -11,8 +11,20 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
     index_col_names.clear();
     const auto &tab = sm_manager_->db_.get_table(tab_name);
     size_t best_score = 0;
+    size_t best_covered = 0;
+    size_t best_width = 0;
     for (const auto &index : tab.indexes) {
         size_t score = 0;
+        size_t covered = 0;
+        for (const auto &col : index.cols) {
+            bool has_cond = std::any_of(curr_conds.begin(), curr_conds.end(), [&](const Condition &candidate) {
+                return candidate.is_rhs_val && candidate.lhs_col.tab_name == tab_name &&
+                       candidate.lhs_col.col_name == col.name && candidate.op != OP_NE;
+            });
+            if (has_cond) {
+                covered++;
+            }
+        }
         for (const auto &col : index.cols) {
             auto cond = std::find_if(curr_conds.begin(), curr_conds.end(), [&](const Condition &candidate) {
                 return candidate.is_rhs_val && candidate.lhs_col.tab_name == tab_name &&
@@ -26,8 +38,12 @@ bool Planner::get_index_cols(std::string tab_name, std::vector<Condition> curr_c
                 break;
             }
         }
-        if (score > best_score) {
+        if (score > best_score ||
+            (score == best_score && covered > best_covered) ||
+            (score == best_score && covered == best_covered && index.cols.size() > best_width)) {
             best_score = score;
+            best_covered = covered;
+            best_width = index.cols.size();
             index_col_names.clear();
             for (const auto &col : index.cols) {
                 index_col_names.push_back(col.name);

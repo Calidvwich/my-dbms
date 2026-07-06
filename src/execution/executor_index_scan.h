@@ -71,6 +71,14 @@ class IndexScanExecutor : public AbstractExecutor {
         return result;
     }
 
+    bool is_index_column(const TabCol &col) const {
+        if (col.tab_name != tab_name_) {
+            return false;
+        }
+        return std::any_of(index_meta_.cols.begin(), index_meta_.cols.end(),
+                           [&](const ColMeta &index_col) { return index_col.name == col.col_name; });
+    }
+
    public:
     IndexScanExecutor(SmManager *sm_manager, std::string tab_name, std::vector<Condition> conds, std::vector<std::string> index_col_names,
                     Context *context) {
@@ -161,12 +169,31 @@ class IndexScanExecutor : public AbstractExecutor {
             offset += col.len;
         }
 
-        auto candidates = ih->range_scan(lower.data(), true, lower_inclusive,
-                                         upper.data(), true, upper_inclusive);
+        std::vector<ColMeta> key_cols = index_meta_.cols;
+        int key_offset = 0;
+        for (auto &col : key_cols) {
+            col.offset = key_offset;
+            key_offset += col.len;
+        }
+
+        std::vector<Condition> index_conds;
+        for (const auto &cond : fed_conds_) {
+            if (cond.is_rhs_val && is_index_column(cond.lhs_col)) {
+                index_conds.push_back(cond);
+            }
+        }
+
+        auto candidates = ih->range_scan_entries(lower.data(), true, lower_inclusive,
+                                                 upper.data(), true, upper_inclusive);
         for (const auto &candidate : candidates) {
-            auto record = fh_->get_record(candidate, context_);
+            RmRecord key_record(static_cast<int>(candidate.first.size()));
+            memcpy(key_record.data, candidate.first.data(), candidate.first.size());
+            if (!eval_conds(key_record, key_cols, index_conds)) {
+                continue;
+            }
+            auto record = fh_->get_record(candidate.second, context_);
             if (eval_conds(*record, cols_, fed_conds_)) {
-                matched_rids_.push_back(candidate);
+                matched_rids_.push_back(candidate.second);
             }
         }
         rid_ = matched_rids_.empty() ? Rid{RM_NO_PAGE, -1} : matched_rids_[0];

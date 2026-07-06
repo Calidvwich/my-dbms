@@ -214,8 +214,19 @@ std::string IxIndexHandle::key_to_string(const char *key) const {
 
 std::vector<Rid> IxIndexHandle::range_scan(const char *lower, bool has_lower, bool lower_inclusive,
                                            const char *upper, bool has_upper, bool upper_inclusive) const {
-    std::lock_guard<std::mutex> guard(root_latch_);
     std::vector<Rid> result;
+    for (const auto &entry : range_scan_entries(lower, has_lower, lower_inclusive,
+                                                upper, has_upper, upper_inclusive)) {
+        result.push_back(entry.second);
+    }
+    return result;
+}
+
+std::vector<std::pair<std::vector<char>, Rid>> IxIndexHandle::range_scan_entries(
+    const char *lower, bool has_lower, bool lower_inclusive,
+    const char *upper, bool has_upper, bool upper_inclusive) const {
+    std::lock_guard<std::mutex> guard(root_latch_);
+    std::vector<std::pair<std::vector<char>, Rid>> result;
     const std::string lower_key = has_lower ? key_to_string(lower) : std::string();
     const std::string upper_key = has_upper ? key_to_string(upper) : std::string();
     auto it = has_lower ? (lower_inclusive ? entries_.lower_bound(lower_key) : entries_.upper_bound(lower_key))
@@ -302,7 +313,7 @@ bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transac
         return false;
     }
     if (result != nullptr) {
-        result->push_back(it->second);
+        result->push_back(it->second.second);
     }
     return true;
 }
@@ -410,7 +421,7 @@ page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transac
     if (entries_.find(key_str) != entries_.end()) {
         throw InternalError("Duplicate key for unique index");
     }
-    entries_[key_str] = value;
+    entries_[key_str] = {std::vector<char>(key, key + file_hdr_->col_tot_len_), value};
     return IX_INIT_ROOT_PAGE;
 }
 

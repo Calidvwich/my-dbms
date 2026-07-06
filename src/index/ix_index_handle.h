@@ -189,7 +189,7 @@ class IxIndexHandle {
     int fd_;                                    // 存储B+树的文件
     IxFileHdr* file_hdr_;                       // 存了root_page，但其初始化为2（第0页存FILE_HDR_PAGE，第1页存LEAF_HEADER_PAGE）
     mutable std::mutex root_latch_;
-    std::map<std::string, Rid> entries_;
+    std::map<std::string, std::pair<std::vector<char>, Rid>> entries_;
 
    public:
     IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd);
@@ -198,6 +198,10 @@ class IxIndexHandle {
 
     std::vector<Rid> range_scan(const char *lower, bool has_lower, bool lower_inclusive,
                                 const char *upper, bool has_upper, bool upper_inclusive) const;
+
+    std::vector<std::pair<std::vector<char>, Rid>> range_scan_entries(
+        const char *lower, bool has_lower, bool lower_inclusive,
+        const char *upper, bool has_upper, bool upper_inclusive) const;
 
     void clear_entries() { entries_.clear(); }
 

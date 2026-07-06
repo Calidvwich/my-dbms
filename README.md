@@ -50,6 +50,13 @@ build/bin/rmdb
 build/bin/rmdb_client
 ```
 
+如果评测脚本需要编译存储管理单元测试，可以执行：
+
+```bash
+make unit_test
+./bin/unit_test
+```
+
 ## 运行
 
 启动服务端：

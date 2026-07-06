@@ -9,6 +9,8 @@ wsl/
 # Build outputs
 build/
 cmake-build-*/
+.submitcheck/
+submit*.zip
 
 # Generated database/test data
 BufferPoolManagerTest_db/

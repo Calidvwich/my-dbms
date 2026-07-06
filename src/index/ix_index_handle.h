@@ -10,6 +10,11 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
 #include "ix_defs.h"
 #include "transaction/transaction.h"
 
@@ -183,10 +188,18 @@ class IxIndexHandle {
     BufferPoolManager *buffer_pool_manager_;
     int fd_;                                    // 存储B+树的文件
     IxFileHdr* file_hdr_;                       // 存了root_page，但其初始化为2（第0页存FILE_HDR_PAGE，第1页存LEAF_HEADER_PAGE）
-    std::mutex root_latch_;
+    mutable std::mutex root_latch_;
+    std::map<std::string, Rid> entries_;
 
    public:
     IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd);
+
+    std::string key_to_string(const char *key) const;
+
+    std::vector<Rid> range_scan(const char *lower, bool has_lower, bool lower_inclusive,
+                                const char *upper, bool has_upper, bool upper_inclusive) const;
+
+    void clear_entries() { entries_.clear(); }
 
     // for search
     bool get_value(const char *key, std::vector<Rid> *result, Transaction *transaction);

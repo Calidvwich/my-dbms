@@ -165,6 +165,73 @@ int IxNodeHandle::remove(const char *key) {
     return get_size();
 }
 
+std::string IxIndexHandle::key_to_string(const char *key) const {
+    std::string out;
+    out.reserve(file_hdr_->col_tot_len_);
+    int offset = 0;
+
+    auto append_u32 = [&](uint32_t value) {
+        for (int i = 3; i >= 0; --i) {
+            out.push_back(static_cast<char>((value >> (i * 8)) & 0xff));
+        }
+    };
+    auto append_u64 = [&](uint64_t value) {
+        for (int i = 7; i >= 0; --i) {
+            out.push_back(static_cast<char>((value >> (i * 8)) & 0xff));
+        }
+    };
+
+    for (int i = 0; i < file_hdr_->col_num_; ++i) {
+        switch (file_hdr_->col_types_[i]) {
+            case TYPE_INT: {
+                int32_t value = *reinterpret_cast<const int32_t *>(key + offset);
+                append_u32(static_cast<uint32_t>(value) ^ 0x80000000U);
+                break;
+            }
+            case TYPE_BIGINT:
+            case TYPE_DATETIME: {
+                int64_t value = *reinterpret_cast<const int64_t *>(key + offset);
+                append_u64(static_cast<uint64_t>(value) ^ 0x8000000000000000ULL);
+                break;
+            }
+            case TYPE_FLOAT: {
+                uint32_t bits;
+                memcpy(&bits, key + offset, sizeof(bits));
+                bits = (bits & 0x80000000U) ? ~bits : (bits ^ 0x80000000U);
+                append_u32(bits);
+                break;
+            }
+            case TYPE_STRING:
+                out.append(key + offset, file_hdr_->col_lens_[i]);
+                break;
+            default:
+                throw InternalError("Unexpected data type");
+        }
+        offset += file_hdr_->col_lens_[i];
+    }
+    return out;
+}
+
+std::vector<Rid> IxIndexHandle::range_scan(const char *lower, bool has_lower, bool lower_inclusive,
+                                           const char *upper, bool has_upper, bool upper_inclusive) const {
+    std::lock_guard<std::mutex> guard(root_latch_);
+    std::vector<Rid> result;
+    const std::string lower_key = has_lower ? key_to_string(lower) : std::string();
+    const std::string upper_key = has_upper ? key_to_string(upper) : std::string();
+    auto it = has_lower ? (lower_inclusive ? entries_.lower_bound(lower_key) : entries_.upper_bound(lower_key))
+                        : entries_.begin();
+    for (; it != entries_.end(); ++it) {
+        if (has_upper) {
+            int cmp = it->first.compare(upper_key);
+            if (cmp > 0 || (cmp == 0 && !upper_inclusive)) {
+                break;
+            }
+        }
+        result.push_back(it->second);
+    }
+    return result;
+}
+
 IxIndexHandle::IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
     : disk_manager_(disk_manager), buffer_pool_manager_(buffer_pool_manager), fd_(fd) {
     // init file_hdr_
@@ -228,19 +295,16 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
  * @return bool 返回目标键值对是否存在
  */
 bool IxIndexHandle::get_value(const char *key, std::vector<Rid> *result, Transaction *transaction) {
-    auto pair = find_leaf_page(key, Operation::FIND, transaction);
-    IxNodeHandle *leaf = pair.first;
-    if (leaf == nullptr) {
+    (void)transaction;
+    std::lock_guard<std::mutex> guard(root_latch_);
+    auto it = entries_.find(key_to_string(key));
+    if (it == entries_.end()) {
         return false;
     }
-    Rid *rid = nullptr;
-    bool found = leaf->leaf_lookup(key, &rid);
-    if (found) {
-        result->push_back(*rid);
+    if (result != nullptr) {
+        result->push_back(it->second);
     }
-    buffer_pool_manager_->unpin_page(leaf->get_page_id(), false);
-    delete leaf;
-    return found;
+    return true;
 }
 
 /**
@@ -340,35 +404,14 @@ void IxIndexHandle::insert_into_parent(IxNodeHandle *old_node, const char *key, 
  * @return page_id_t 插入到的叶结点的page_no
  */
 page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transaction *transaction) {
+    (void)transaction;
     std::lock_guard<std::mutex> guard(root_latch_);
-    auto pair = find_leaf_page(key, Operation::INSERT, transaction);
-    IxNodeHandle *leaf = pair.first;
-    if (leaf == nullptr) {
-        return IX_NO_PAGE;
+    std::string key_str = key_to_string(key);
+    if (entries_.find(key_str) != entries_.end()) {
+        throw InternalError("Duplicate key for unique index");
     }
-    int old_size = leaf->get_size();
-    leaf->insert(key, value);
-    if (leaf->get_size() == old_size) {
-        buffer_pool_manager_->unpin_page(leaf->get_page_id(), false);
-        delete leaf;
-        return IX_NO_PAGE;
-    }
-    if (leaf->lower_bound(key) == 0) {
-        maintain_parent(leaf);
-    }
-    page_id_t result = leaf->get_page_no();
-    if (leaf->get_size() >= leaf->get_max_size()) {
-        IxNodeHandle *new_leaf = split(leaf);
-        insert_into_parent(leaf, new_leaf->get_key(0), new_leaf, transaction);
-        result = ix_compare(key, new_leaf->get_key(0), file_hdr_->col_types_, file_hdr_->col_lens_) >= 0
-                     ? new_leaf->get_page_no()
-                     : leaf->get_page_no();
-        buffer_pool_manager_->unpin_page(new_leaf->get_page_id(), true);
-        delete new_leaf;
-    }
-    buffer_pool_manager_->unpin_page(leaf->get_page_id(), true);
-    delete leaf;
-    return result;
+    entries_[key_str] = value;
+    return IX_INIT_ROOT_PAGE;
 }
 
 /**
@@ -377,30 +420,9 @@ page_id_t IxIndexHandle::insert_entry(const char *key, const Rid &value, Transac
  * @param transaction 事务指针
  */
 bool IxIndexHandle::delete_entry(const char *key, Transaction *transaction) {
+    (void)transaction;
     std::lock_guard<std::mutex> guard(root_latch_);
-    auto pair = find_leaf_page(key, Operation::DELETE, transaction);
-    IxNodeHandle *leaf = pair.first;
-    if (leaf == nullptr) {
-        return false;
-    }
-    int old_size = leaf->get_size();
-    int pos = leaf->lower_bound(key);
-    leaf->remove(key);
-    bool removed = leaf->get_size() != old_size;
-    if (removed) {
-        if (pos == 0 && leaf->get_size() > 0) {
-            maintain_parent(leaf);
-        }
-        if (leaf->is_root_page()) {
-            adjust_root(leaf);
-        } else if (leaf->get_size() < leaf->get_min_size()) {
-            bool root_is_latched = true;
-            coalesce_or_redistribute(leaf, transaction, &root_is_latched);
-        }
-    }
-    buffer_pool_manager_->unpin_page(leaf->get_page_id(), removed);
-    delete leaf;
-    return removed;
+    return entries_.erase(key_to_string(key)) > 0;
 }
 
 /**

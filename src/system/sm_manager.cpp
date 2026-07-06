@@ -19,6 +19,23 @@ See the Mulan PSL v2 for more details. */
 #include "record/rm.h"
 #include "record_printer.h"
 
+namespace {
+
+std::vector<char> make_index_key(const std::vector<ColMeta> &cols, const char *record_data) {
+    std::vector<char> key;
+    int total_len = 0;
+    for (const auto &col : cols) {
+        total_len += col.len;
+    }
+    key.reserve(total_len);
+    for (const auto &col : cols) {
+        key.insert(key.end(), record_data + col.offset, record_data + col.offset + col.len);
+    }
+    return key;
+}
+
+}  // namespace
+
 /**
  * @description: 判断是否为一个文件夹
  * @return {bool} 返回是否为一个文件夹
@@ -107,6 +124,14 @@ void SmManager::open_db(const std::string& db_name) {
             for (const auto &index : entry.second.indexes) {
                 std::string index_name = ix_manager_->get_index_name(table_name, index.cols);
                 ihs_[index_name] = ix_manager_->open_index(table_name, index.cols);
+                ihs_[index_name]->clear_entries();
+                RmScan scan(fhs_[table_name].get());
+                while (!scan.is_end()) {
+                    auto record = fhs_[table_name]->get_record(scan.rid(), nullptr);
+                    auto key = make_index_key(index.cols, record->data);
+                    ihs_[index_name]->insert_entry(key.data(), scan.rid(), nullptr);
+                    scan.next();
+                }
             }
         }
         int log_fd = disk_manager_->open_file(LOG_FILE_NAME);

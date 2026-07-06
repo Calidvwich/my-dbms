@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 #include <limits>
+#include <map>
 
 
 #include "execution_defs.h"
@@ -32,7 +33,8 @@ class IndexScanExecutor : public AbstractExecutor {
     IndexMeta index_meta_;                      // index scan涉及到的索引元数据
 
     Rid rid_;
-    std::unique_ptr<RecScan> scan_;
+    std::vector<Rid> matched_rids_;
+    size_t cursor_ = 0;
 
     SmManager *sm_manager_;
 
@@ -56,6 +58,17 @@ class IndexScanExecutor : public AbstractExecutor {
         } else if (col.type == TYPE_BIGINT || col.type == TYPE_DATETIME) {
             *reinterpret_cast<int64_t *>(dest) = std::numeric_limits<int64_t>::max();
         }
+    }
+
+    std::vector<Condition> column_conds(const std::string &col_name) const {
+        std::vector<Condition> result;
+        for (const auto &cond : fed_conds_) {
+            if (cond.is_rhs_val && cond.lhs_col.tab_name == tab_name_ &&
+                cond.lhs_col.col_name == col_name && cond.op != OP_NE) {
+                result.push_back(cond);
+            }
+        }
+        return result;
     }
 
    public:
@@ -94,75 +107,76 @@ class IndexScanExecutor : public AbstractExecutor {
     }
 
     void beginTuple() override {
+        matched_rids_.clear();
+        cursor_ = 0;
         auto index_name = sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols);
         auto *ih = sm_manager_->ihs_.at(index_name).get();
         std::vector<char> lower(index_meta_.col_tot_len);
         std::vector<char> upper(index_meta_.col_tot_len);
         int offset = 0;
-        bool lower_strict = false;
+        bool lower_inclusive = true;
         bool upper_inclusive = true;
-        bool prefix_open = true;
+        bool stopped = false;
 
         for (const auto &col : index_meta_.cols) {
-            fill_min(lower.data() + offset, col);
-            fill_max(upper.data() + offset, col);
-            if (prefix_open) {
-                std::vector<const Condition *> col_conds;
-                for (const auto &cond : fed_conds_) {
-                    if (cond.is_rhs_val && cond.lhs_col.tab_name == tab_name_ &&
-                        cond.lhs_col.col_name == col.name && cond.op != OP_NE) {
-                        col_conds.push_back(&cond);
-                    }
+            if (stopped) {
+                fill_min(lower.data() + offset, col);
+                fill_max(upper.data() + offset, col);
+                offset += col.len;
+                continue;
+            }
+
+            auto col_conds = column_conds(col.name);
+            const Condition *equality = nullptr;
+            const Condition *lower_cond = nullptr;
+            const Condition *upper_cond = nullptr;
+            for (const auto &cond : col_conds) {
+                if (cond.op == OP_EQ) {
+                    equality = &cond;
+                } else if (cond.op == OP_GT || cond.op == OP_GE) {
+                    lower_cond = &cond;
+                } else if (cond.op == OP_LT || cond.op == OP_LE) {
+                    upper_cond = &cond;
                 }
-                auto equality = std::find_if(col_conds.begin(), col_conds.end(),
-                                             [](const Condition *cond) { return cond->op == OP_EQ; });
-                if (equality != col_conds.end()) {
-                    memcpy(lower.data() + offset, (*equality)->rhs_val.raw->data, col.len);
-                    memcpy(upper.data() + offset, (*equality)->rhs_val.raw->data, col.len);
-                } else if (!col_conds.empty()) {
-                    for (const Condition *cond : col_conds) {
-                        if (cond->op == OP_GT || cond->op == OP_GE) {
-                            memcpy(lower.data() + offset, cond->rhs_val.raw->data, col.len);
-                            lower_strict = cond->op == OP_GT;
-                        } else if (cond->op == OP_LT || cond->op == OP_LE) {
-                            memcpy(upper.data() + offset, cond->rhs_val.raw->data, col.len);
-                            upper_inclusive = cond->op == OP_LE;
-                        }
-                    }
-                    prefix_open = false;
+            }
+
+            if (equality != nullptr) {
+                memcpy(lower.data() + offset, equality->rhs_val.raw->data, col.len);
+                memcpy(upper.data() + offset, equality->rhs_val.raw->data, col.len);
+            } else {
+                if (lower_cond != nullptr) {
+                    memcpy(lower.data() + offset, lower_cond->rhs_val.raw->data, col.len);
+                    lower_inclusive = lower_cond->op == OP_GE;
                 } else {
-                    prefix_open = false;
+                    fill_min(lower.data() + offset, col);
                 }
+                if (upper_cond != nullptr) {
+                    memcpy(upper.data() + offset, upper_cond->rhs_val.raw->data, col.len);
+                    upper_inclusive = upper_cond->op == OP_LE;
+                } else {
+                    fill_max(upper.data() + offset, col);
+                }
+                stopped = true;
             }
             offset += col.len;
         }
 
-        Iid begin = lower_strict ? ih->upper_bound(lower.data()) : ih->lower_bound(lower.data());
-        Iid end = upper_inclusive ? ih->upper_bound(upper.data()) : ih->lower_bound(upper.data());
-        scan_ = std::make_unique<IxScan>(ih, begin, end, sm_manager_->get_bpm());
-        while (!scan_->is_end()) {
-            auto record = fh_->get_record(scan_->rid(), context_);
+        auto candidates = ih->range_scan(lower.data(), true, lower_inclusive,
+                                         upper.data(), true, upper_inclusive);
+        for (const auto &candidate : candidates) {
+            auto record = fh_->get_record(candidate, context_);
             if (eval_conds(*record, cols_, fed_conds_)) {
-                rid_ = scan_->rid();
-                return;
+                matched_rids_.push_back(candidate);
             }
-            scan_->next();
         }
+        rid_ = matched_rids_.empty() ? Rid{RM_NO_PAGE, -1} : matched_rids_[0];
     }
 
     void nextTuple() override {
-        if (scan_ == nullptr || scan_->is_end()) {
-            return;
+        if (cursor_ < matched_rids_.size()) {
+            ++cursor_;
         }
-        scan_->next();
-        while (!scan_->is_end()) {
-            auto record = fh_->get_record(scan_->rid(), context_);
-            if (eval_conds(*record, cols_, fed_conds_)) {
-                rid_ = scan_->rid();
-                return;
-            }
-            scan_->next();
-        }
+        rid_ = cursor_ < matched_rids_.size() ? matched_rids_[cursor_] : Rid{RM_NO_PAGE, -1};
     }
 
     std::unique_ptr<RmRecord> Next() override {
@@ -174,7 +188,7 @@ class IndexScanExecutor : public AbstractExecutor {
 
     size_t tupleLen() const override { return len_; }
     const std::vector<ColMeta> &cols() const override { return cols_; }
-    bool is_end() const override { return scan_ == nullptr || scan_->is_end(); }
+    bool is_end() const override { return cursor_ >= matched_rids_.size(); }
     ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
     Rid &rid() override { return rid_; }
 };

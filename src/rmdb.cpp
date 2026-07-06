@@ -81,36 +81,27 @@ void *client_handler(void *sock_fd) {
     // 记录客户端当前正在执行的事务ID
     txn_id_t txn_id = INVALID_TXN_ID;
 
-    std::string output = "establish client connection, sockfd: " + std::to_string(fd) + "\n";
-    std::cout << output;
-
     while (true) {
-        std::cout << "Waiting for request..." << std::endl;
         memset(data_recv, 0, BUFFER_LENGTH);
 
-        i_recvBytes = read(fd, data_recv, BUFFER_LENGTH);
+        i_recvBytes = read(fd, data_recv, BUFFER_LENGTH - 1);
 
         if (i_recvBytes == 0) {
-            std::cout << "Maybe the client has closed" << std::endl;
             break;
         }
         if (i_recvBytes == -1) {
             std::cout << "Client read error!" << std::endl;
             break;
         }
+        data_recv[std::min(i_recvBytes, BUFFER_LENGTH - 1)] = '\0';
         
-        printf("i_recvBytes: %d \n ", i_recvBytes);
-
         if (strcmp(data_recv, "exit") == 0) {
-            std::cout << "Client exit." << std::endl;
             break;
         }
         if (strcmp(data_recv, "crash") == 0) {
             std::cout << "Server crash" << std::endl;
             exit(1);
         }
-
-        std::cout << "Read from client " << fd << ": " << data_recv << std::endl;
 
         memset(data_send, '\0', BUFFER_LENGTH);
         offset = 0;
@@ -233,7 +224,6 @@ void *client_handler(void *sock_fd) {
     }
 
     // Clear
-    std::cout << "Terminating current client_connection..." << std::endl;
     close(fd);           // close a file descriptor.
     pthread_exit(NULL);  // terminate calling thread!
 }
@@ -273,7 +263,6 @@ void start_server() {
     }
 
     while (!should_exit) {
-        std::cout << "Waiting for new connection..." << std::endl;
         pthread_t thread_id;
         struct sockaddr_in s_addr_client {};
         int client_length = sizeof(s_addr_client);

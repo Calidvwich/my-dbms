@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "rm_file_handle.h"
 
+#include <unordered_set>
+
 /**
  * @description: 获取当前表中记录号为rid的记录
  * @param {Rid&} rid 记录号，指定记录的位置
@@ -84,7 +86,14 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
             file_hdr_.first_free_page_no = page_handle.page_hdr->next_free_page_no;
         } else {
             int current = file_hdr_.first_free_page_no;
+            int guard = 0;
+            std::unordered_set<int> visited;
             while (current != RM_NO_PAGE) {
+                if (current < RM_FIRST_RECORD_PAGE || current >= file_hdr_.num_pages ||
+                    ++guard > file_hdr_.num_pages || !visited.insert(current).second) {
+                    buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+                    throw InternalError("Corrupted record free page list");
+                }
                 RmPageHandle current_page = fetch_page_handle(current);
                 if (current_page.page_hdr->next_free_page_no == page_no) {
                     current_page.page_hdr->next_free_page_no = page_handle.page_hdr->next_free_page_no;

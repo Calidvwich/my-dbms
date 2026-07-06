@@ -12,6 +12,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "ix_scan.h"
 
+#include <unordered_set>
+
 /**
  * @brief 在当前node中查找第一个>=target的key_idx
  *
@@ -189,8 +191,21 @@ std::pair<IxNodeHandle *, bool> IxIndexHandle::find_leaf_page(const char *key, O
         return {nullptr, false};
     }
     IxNodeHandle *node = fetch_node(file_hdr_->root_page_);
+    int guard = 0;
+    std::unordered_set<page_id_t> visited;
     while (!node->is_leaf_page()) {
+        page_id_t current_page = node->get_page_no();
+        if (++guard > file_hdr_->num_pages_ || !visited.insert(current_page).second || node->get_size() <= 0) {
+            buffer_pool_manager_->unpin_page(node->get_page_id(), false);
+            delete node;
+            throw InternalError("Corrupted index tree");
+        }
         page_id_t child_page = find_first ? node->value_at(0) : node->internal_lookup(key);
+        if (child_page == IX_NO_PAGE || child_page == current_page || child_page >= file_hdr_->num_pages_) {
+            buffer_pool_manager_->unpin_page(node->get_page_id(), false);
+            delete node;
+            throw InternalError("Corrupted index child pointer");
+        }
         IxNodeHandle *child = fetch_node(child_page);
         buffer_pool_manager_->unpin_page(node->get_page_id(), false);
         delete node;
@@ -676,13 +691,23 @@ void IxIndexHandle::maintain_parent(IxNodeHandle *node) {
     page_id_t parent_page = node->get_parent_page_no();
     std::vector<char> first_key(file_hdr_->col_tot_len_);
     memcpy(first_key.data(), node->get_key(0), file_hdr_->col_tot_len_);
+    int guard = 0;
+    std::unordered_set<page_id_t> visited;
     while (parent_page != IX_NO_PAGE) {
+        if (parent_page == child_page || parent_page >= file_hdr_->num_pages_ ||
+            ++guard > file_hdr_->num_pages_ || !visited.insert(parent_page).second) {
+            throw InternalError("Corrupted index parent chain");
+        }
         IxNodeHandle *parent = fetch_node(parent_page);
         int rank = 0;
         while (rank < parent->get_size() && parent->value_at(rank) != child_page) {
             rank++;
         }
-        assert(rank < parent->get_size());
+        if (rank >= parent->get_size()) {
+            buffer_pool_manager_->unpin_page(parent->get_page_id(), false);
+            delete parent;
+            throw InternalError("Corrupted index parent entry");
+        }
         bool changed = memcmp(parent->get_key(rank), first_key.data(), file_hdr_->col_tot_len_) != 0;
         if (changed) {
             memcpy(parent->get_key(rank), first_key.data(), file_hdr_->col_tot_len_);

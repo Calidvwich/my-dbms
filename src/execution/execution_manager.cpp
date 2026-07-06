@@ -160,6 +160,9 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     // 执行query_plan
     for (executorTreeRoot->beginTuple(); !executorTreeRoot->is_end(); executorTreeRoot->nextTuple()) {
         auto Tuple = executorTreeRoot->Next();
+        if (Tuple == nullptr) {
+            throw InternalError("Executor returned empty tuple");
+        }
         std::vector<std::string> columns;
         for (auto &col : executorTreeRoot->cols()) {
             std::string col_str;

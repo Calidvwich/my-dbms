@@ -143,10 +143,14 @@ class IxNodeHandle {
      * @return the last child
      */
     page_id_t remove_and_return_only_child() {
-        assert(get_size() == 1);
+        if (get_size() != 1) {
+            throw InternalError("Invalid root index node");
+        }
         page_id_t child_page_no = value_at(0);
         erase_pair(0);
-        assert(get_size() == 0);
+        if (get_size() != 0) {
+            throw InternalError("Invalid root index state");
+        }
         return child_page_no;
     }
 
@@ -162,7 +166,9 @@ class IxNodeHandle {
                 break;
             }
         }
-        assert(rid_idx < page_hdr->num_key);
+        if (rid_idx >= page_hdr->num_key) {
+            throw InternalError("Index child not found");
+        }
         return rid_idx;
     }
 };

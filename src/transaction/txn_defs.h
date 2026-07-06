@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "common/config.h"
 #include "defs.h"
+#include "errors.h"
 #include "record/rm_defs.h"
 
 /* 标识事务状态 */
@@ -75,7 +76,9 @@ class LockDataId {
    public:
     /* 表级锁 */
     LockDataId(int fd, LockDataType type) {
-        assert(type == LockDataType::TABLE);
+        if (type != LockDataType::TABLE) {
+            throw InternalError("Invalid table lock id");
+        }
         fd_ = fd;
         type_ = type;
         rid_.page_no = -1;
@@ -84,7 +87,9 @@ class LockDataId {
 
     /* 行级锁 */
     LockDataId(int fd, const Rid &rid, LockDataType type) {
-        assert(type == LockDataType::RECORD);
+        if (type != LockDataType::RECORD) {
+            throw InternalError("Invalid record lock id");
+        }
         fd_ = fd;
         rid_ = rid;
         type_ = type;

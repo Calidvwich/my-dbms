@@ -1117,7 +1117,7 @@ case YY_STATE_EOF(STATE_COMMENT):
 case 39:
 YY_RULE_SETUP
 #line 108 "lex.l"
-{ std::cerr << "Lexer Error: unexpected character " << yytext[0] << std::endl; }
+{ return INVALID_INTEGER; }
 	YY_BREAK
 case 40:
 YY_RULE_SETUP

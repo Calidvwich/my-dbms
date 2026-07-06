@@ -138,7 +138,6 @@ void *client_handler(void *sock_fd) {
 
                     // 回滚事务
                     txn_manager->abort(context->txn_, log_manager.get());
-                    std::cout << e.GetInfo() << std::endl;
 
                     std::fstream outfile;
                     outfile.open("output.txt", std::ios::out | std::ios::app);
@@ -146,8 +145,6 @@ void *client_handler(void *sock_fd) {
                     outfile.close();
                 } catch (RMDBError &e) {
                     // 遇到异常，需要打印failure到output.txt文件中，并发异常信息返回给客户端
-                    std::cerr << e.what() << std::endl;
-
                     memcpy(data_send, e.what(), e.get_msg_len());
                     data_send[e.get_msg_len()] = '\n';
                     data_send[e.get_msg_len() + 1] = '\0';
@@ -159,7 +156,6 @@ void *client_handler(void *sock_fd) {
                     outfile << "failure\n";
                     outfile.close();
                 } catch (std::exception &e) {
-                    std::cerr << e.what() << std::endl;
                     std::string failure = "failure\n";
                     memcpy(data_send, failure.c_str(), failure.size());
                     offset = static_cast<int>(failure.size());
@@ -201,7 +197,6 @@ void *client_handler(void *sock_fd) {
                 txn_manager->commit(context->txn_, context->log_mgr_);
             }
         } catch (std::exception &e) {
-            std::cerr << e.what() << std::endl;
             std::string failure = "failure\n";
             memcpy(data_send, failure.c_str(), failure.size());
             offset = static_cast<int>(failure.size());
@@ -241,7 +236,9 @@ void start_server() {
 
     // 初始化连接
     sockfd_server = socket(AF_INET, SOCK_STREAM, 0);  // ipv4,TCP
-    assert(sockfd_server != -1);
+    if (sockfd_server == -1) {
+        throw UnixError();
+    }
     int val = 1;
     setsockopt(sockfd_server, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 

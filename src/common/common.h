@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <cassert>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "defs.h"
@@ -67,13 +68,19 @@ struct Value {
     }
 
     void init_raw(int len) {
-        assert(raw == nullptr);
+        if (raw != nullptr || len <= 0) {
+            throw std::runtime_error("invalid value buffer");
+        }
         raw = std::make_shared<RmRecord>(len);
         if (type == TYPE_INT) {
-            assert(len == sizeof(int));
+            if (len != sizeof(int)) {
+                throw std::runtime_error("invalid int length");
+            }
             *(int *)(raw->data) = int_val;
         } else if (type == TYPE_FLOAT) {
-            assert(len == sizeof(float));
+            if (len != sizeof(float)) {
+                throw std::runtime_error("invalid float length");
+            }
             *(float *)(raw->data) = float_val;
         } else if (type == TYPE_STRING) {
             if (len < (int)str_val.size()) {
@@ -82,11 +89,17 @@ struct Value {
             memset(raw->data, 0, len);
             memcpy(raw->data, str_val.c_str(), str_val.size());
         } else if (type == TYPE_BIGINT) {
-            assert(len == sizeof(int64_t));
+            if (len != sizeof(int64_t)) {
+                throw std::runtime_error("invalid bigint length");
+            }
             *reinterpret_cast<int64_t *>(raw->data) = bigint_val;
         } else if (type == TYPE_DATETIME) {
-            assert(len == sizeof(int64_t));
+            if (len != sizeof(int64_t)) {
+                throw std::runtime_error("invalid datetime length");
+            }
             *reinterpret_cast<int64_t *>(raw->data) = datetime_val;
+        } else {
+            throw std::runtime_error("unknown value type");
         }
     }
 };

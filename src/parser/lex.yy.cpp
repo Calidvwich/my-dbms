@@ -1245,7 +1245,6 @@ case 54:
 YY_RULE_SETUP
 #line 131 "lex.l"
 {
-    std::cerr << "Lexer Error: unexpected character " << yytext[0] << std::endl;
     return INVALID_INTEGER;
 }
 	YY_BREAK
@@ -2221,5 +2220,4 @@ void yyfree (void * ptr )
 #define YYTABLES_NAME "yytables"
 
 #line 135 "lex.l"
-
 

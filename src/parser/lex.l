@@ -128,7 +128,6 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 <<EOF>> { return T_EOF; }
     /* unexpected char */
 . {
-    std::cerr << "Lexer Error: unexpected character " << yytext[0] << std::endl;
     return INVALID_INTEGER;
 }
 %%

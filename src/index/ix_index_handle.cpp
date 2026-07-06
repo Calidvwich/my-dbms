@@ -78,7 +78,9 @@ bool IxNodeHandle::leaf_lookup(const char *key, Rid **value) {
  * @return page_id_t 目标key所在的孩子节点（子树）的存储页面编号
  */
 page_id_t IxNodeHandle::internal_lookup(const char *key) {
-    assert(!is_leaf_page() && get_size() > 0);
+    if (is_leaf_page() || get_size() <= 0) {
+        throw InternalError("Invalid internal index node");
+    }
     int pos = upper_bound(key) - 1;
     if (pos < 0) {
         pos = 0;
@@ -101,8 +103,9 @@ page_id_t IxNodeHandle::internal_lookup(const char *key) {
  *                      key           key_slot
  */
 void IxNodeHandle::insert_pairs(int pos, const char *key, const Rid *rid, int n) {
-    assert(pos >= 0 && pos <= get_size() && n >= 0);
-    assert(get_size() + n <= get_max_size());
+    if (pos < 0 || pos > get_size() || n < 0 || get_size() + n > get_max_size()) {
+        throw InternalError("Invalid index insertion");
+    }
     int tail = get_size() - pos;
     if (tail > 0) {
         memmove(get_key(pos + n), get_key(pos), tail * file_hdr->col_tot_len_);
@@ -136,7 +139,9 @@ int IxNodeHandle::insert(const char *key, const Rid &value) {
  * @param pos 要删除键值对的位置
  */
 void IxNodeHandle::erase_pair(int pos) {
-    assert(pos >= 0 && pos < get_size());
+    if (pos < 0 || pos >= get_size()) {
+        throw InternalError("Invalid index deletion");
+    }
     int tail = get_size() - pos - 1;
     if (tail > 0) {
         memmove(get_key(pos), get_key(pos + 1), tail * file_hdr->col_tot_len_);
@@ -732,15 +737,23 @@ void IxIndexHandle::maintain_parent(IxNodeHandle *node) {
  * @param leaf 要删除的leaf
  */
 void IxIndexHandle::erase_leaf(IxNodeHandle *leaf) {
-    assert(leaf->is_leaf_page());
+    if (leaf == nullptr || !leaf->is_leaf_page()) {
+        throw InternalError("Invalid leaf deletion");
+    }
 
-    IxNodeHandle *prev = fetch_node(leaf->get_prev_leaf());
-    prev->set_next_leaf(leaf->get_next_leaf());
-    buffer_pool_manager_->unpin_page(prev->get_page_id(), true);
+    if (leaf->get_prev_leaf() != IX_NO_PAGE && leaf->get_prev_leaf() != IX_LEAF_HEADER_PAGE) {
+        IxNodeHandle *prev = fetch_node(leaf->get_prev_leaf());
+        prev->set_next_leaf(leaf->get_next_leaf());
+        buffer_pool_manager_->unpin_page(prev->get_page_id(), true);
+        delete prev;
+    }
 
-    IxNodeHandle *next = fetch_node(leaf->get_next_leaf());
+    if (leaf->get_next_leaf() != IX_NO_PAGE && leaf->get_next_leaf() != IX_LEAF_HEADER_PAGE) {
+        IxNodeHandle *next = fetch_node(leaf->get_next_leaf());
     next->set_prev_leaf(leaf->get_prev_leaf());  // 注意此处是SetPrevLeaf()
-    buffer_pool_manager_->unpin_page(next->get_page_id(), true);
+        buffer_pool_manager_->unpin_page(next->get_page_id(), true);
+        delete next;
+    }
 }
 
 /**

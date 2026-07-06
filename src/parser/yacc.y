@@ -8,7 +8,8 @@
 int yylex(YYSTYPE *yylval, YYLTYPE *yylloc);
 
 void yyerror(YYLTYPE *locp, const char* s) {
-    std::cerr << "Parser Error at line " << locp->first_line << " column " << locp->first_column << ": " << s << std::endl;
+    (void)locp;
+    (void)s;
 }
 
 using namespace ast;

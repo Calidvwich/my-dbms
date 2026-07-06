@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "defs.h"
+#include "errors.h"
 #include "storage/buffer_pool_manager.h"
 
 constexpr int IX_NO_PAGE = -1;
@@ -85,7 +86,9 @@ public:
         offset += sizeof(page_id_t);
         memcpy(dest + offset, &last_leaf_, sizeof(page_id_t));
         offset += sizeof(page_id_t);
-        assert(offset == tot_len_);
+        if (offset != tot_len_) {
+            throw InternalError("Invalid index header serialization");
+        }
     }
 
     void deserialize(char* src) {
@@ -122,7 +125,9 @@ public:
         offset += sizeof(page_id_t);
         last_leaf_ = *reinterpret_cast<const page_id_t*>(src + offset);
         offset += sizeof(page_id_t);
-        assert(offset == tot_len_);
+        if (offset != tot_len_) {
+            throw InternalError("Invalid index header deserialization");
+        }
     }
 };
 

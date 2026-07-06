@@ -80,7 +80,9 @@ void DiskManager::read_page(int fd, page_id_t page_no, char *offset, int num_byt
  */
 page_id_t DiskManager::allocate_page(int fd) {
     // 简单的自增分配策略，指定文件的页面编号加1
-    assert(fd >= 0 && fd < MAX_FD);
+    if (fd < 0 || fd >= MAX_FD) {
+        throw FileNotOpenError(fd);
+    }
     return fd2pageno_[fd]++;
 }
 
@@ -260,7 +262,9 @@ int DiskManager::read_log(char *log_data, int size, int offset) {
     if(size == 0) return 0;
     lseek(log_fd_, offset, SEEK_SET);
     ssize_t bytes_read = read(log_fd_, log_data, size);
-    assert(bytes_read == size);
+    if (bytes_read < 0) {
+        throw UnixError();
+    }
     return bytes_read;
 }
 

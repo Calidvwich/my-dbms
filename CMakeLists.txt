@@ -13,6 +13,5 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -g")
 
 
-enable_testing()
 add_subdirectory(src)
-add_subdirectory(deps)
+add_subdirectory(rmdb_client)

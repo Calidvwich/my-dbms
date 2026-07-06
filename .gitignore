@@ -17,7 +17,14 @@ BufferPoolManagerTest_db/
 p10_recovery_db/
 
 # Local ad-hoc test scripts
+tests/
 tests/extreme_all.py
+
+# Reference documents and screenshots
+*.pdf
+*.png
+*.jpg
+*.jpeg
 
 # Logs and temporary files
 *.log

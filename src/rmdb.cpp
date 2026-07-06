@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <signal.h>
 #include <unistd.h>
 #include <atomic>
+#include <exception>
 
 #include "errors.h"
 #include "optimizer/optimizer.h"
@@ -166,6 +167,23 @@ void *client_handler(void *sock_fd) {
                     outfile.open("output.txt",std::ios::out | std::ios::app);
                     outfile << "failure\n";
                     outfile.close();
+                } catch (std::exception &e) {
+                    std::cerr << e.what() << std::endl;
+                    std::string failure = "failure\n";
+                    memcpy(data_send, failure.c_str(), failure.size());
+                    offset = static_cast<int>(failure.size());
+                    std::fstream outfile;
+                    outfile.open("output.txt", std::ios::out | std::ios::app);
+                    outfile << failure;
+                    outfile.close();
+                } catch (...) {
+                    std::string failure = "failure\n";
+                    memcpy(data_send, failure.c_str(), failure.size());
+                    offset = static_cast<int>(failure.size());
+                    std::fstream outfile;
+                    outfile.open("output.txt", std::ios::out | std::ios::app);
+                    outfile << failure;
+                    outfile.close();
                 }
             }
         } else {
@@ -184,11 +202,30 @@ void *client_handler(void *sock_fd) {
         // future TODO: 格式化 sql_handler.result, 传给客户端
         // send result with fixed format, use protobuf in the future
         // 如果是单挑语句，需要按照一个完整的事务来执行，所以执行完当前语句后，自动提交事务
-        if(context->txn_->get_txn_mode() == false &&
-           context->txn_->get_state() != TransactionState::ABORTED &&
-           context->txn_->get_state() != TransactionState::COMMITTED)
-        {
-            txn_manager->commit(context->txn_, context->log_mgr_);
+        try {
+            if(context->txn_->get_txn_mode() == false &&
+               context->txn_->get_state() != TransactionState::ABORTED &&
+               context->txn_->get_state() != TransactionState::COMMITTED)
+            {
+                txn_manager->commit(context->txn_, context->log_mgr_);
+            }
+        } catch (std::exception &e) {
+            std::cerr << e.what() << std::endl;
+            std::string failure = "failure\n";
+            memcpy(data_send, failure.c_str(), failure.size());
+            offset = static_cast<int>(failure.size());
+            std::fstream outfile;
+            outfile.open("output.txt", std::ios::out | std::ios::app);
+            outfile << failure;
+            outfile.close();
+        } catch (...) {
+            std::string failure = "failure\n";
+            memcpy(data_send, failure.c_str(), failure.size());
+            offset = static_cast<int>(failure.size());
+            std::fstream outfile;
+            outfile.open("output.txt", std::ios::out | std::ios::app);
+            outfile << failure;
+            outfile.close();
         }
         if (write(fd, data_send, offset + 1) == -1) {
             break;
@@ -259,6 +296,7 @@ void start_server() {
             std::cout << "Create thread fail!" << std::endl;
             break;  // break while loop
         }
+        pthread_detach(thread_id);
 
     }
 

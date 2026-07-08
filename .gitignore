@@ -13,6 +13,9 @@ cmake-build-*/
 .submitcheck/
 submit*.zip
 rmdb.zip
+*.zip
+*.docx
+*.doc
 
 # Unused files from the upstream googletest source package.  The repository only
 # tracks the minimal subset required to build the storage unit_test target.
